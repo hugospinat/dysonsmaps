@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import io
 import re
 import shutil
 import time
+import zipfile
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -47,6 +49,84 @@ class DownloadImagesStage(StageBase):
         session = requests.Session()
         session.headers.update({"User-Agent": "Mozilla/5.0 (compatible; DysonAssetDownloader/1.0)"})
         return session
+
+    def _split_pipe_values(self, value: str) -> list[str]:
+        if not isinstance(value, str) or not value.strip():
+            return []
+        return [part.strip() for part in value.split("|") if part.strip()]
+
+    def _safe_zip_member_name(self, member_name: str) -> str:
+        normalized = str(member_name or "").replace("\\", "/")
+        leaf = normalized.split("/")[-1].strip()
+        return re.sub(r'[<>:"/\\|?*]+', "_", leaf)
+
+    def _next_available_path(self, folder: Path, file_name: str) -> Path:
+        base = Path(file_name).stem
+        ext = Path(file_name).suffix
+        candidate = folder / file_name
+        if not candidate.exists():
+            return candidate
+
+        index = 2
+        while True:
+            candidate = folder / f"{base}_{index}{ext}"
+            if not candidate.exists():
+                return candidate
+            index += 1
+
+    def _extract_images_from_zip(
+        self,
+        zip_bytes: bytes,
+        folder_path: Path,
+        *,
+        source_file: str,
+        zip_url: str,
+    ) -> tuple[list[dict[str, str | int | float]], int]:
+        rows: list[dict[str, str | int | float]] = []
+        skipped_existing = 0
+        seen_names: set[str] = set()
+
+        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as archive:
+            for member in archive.infolist():
+                if member.is_dir():
+                    continue
+
+                safe_name = self._safe_zip_member_name(member.filename)
+                if not safe_name:
+                    continue
+
+                ext = Path(safe_name).suffix.lower().lstrip(".")
+                if ext not in IMAGE_EXTS:
+                    continue
+
+                preferred_target = folder_path / safe_name
+                if preferred_target.exists() and safe_name not in seen_names:
+                    target_path = preferred_target
+                    skipped_existing += 1
+                else:
+                    target_path = self._next_available_path(folder_path, safe_name)
+                    try:
+                        with archive.open(member) as src, target_path.open("wb") as dst:
+                            shutil.copyfileobj(src, dst)
+                    except Exception:
+                        continue
+
+                seen_names.add(target_path.name)
+                rows.append(
+                    {
+                        "asset_type": "image",
+                        "url": f"{zip_url}#{member.filename}",
+                        "file_name": target_path.name,
+                        "file_stem": self._stem_from_filename(target_path.name),
+                        "file_ext": ext,
+                        "source_file": source_file,
+                        "candidate_rank": "",
+                        "candidate_score": "",
+                        "is_best_candidate": 0,
+                    }
+                )
+
+        return rows, skipped_existing
 
     def _ext_from_url(self, url: str) -> str:
         path = urlparse(url).path.lower()
@@ -259,6 +339,11 @@ class DownloadImagesStage(StageBase):
             "pages_partial": 0,
             "pages_failed": 0,
             "pages_no_images": 0,
+            "zip_links_total": 0,
+            "zip_archives_processed": 0,
+            "zip_archives_failed": 0,
+            "zip_images_extracted": 0,
+            "zip_images_skipped_existing": 0,
         }
 
         summary_rows: list[dict[str, str | int]] = []
@@ -289,6 +374,36 @@ class DownloadImagesStage(StageBase):
         output_root = self.config.downloads_output_root
         output_root.mkdir(parents=True, exist_ok=True)
 
+        filtered_inventory = inventory_df.copy()
+        if self.config.s03_require_maps_tag:
+            if "tags" not in filtered_inventory.columns:
+                filtered_inventory["tags"] = ""
+            filtered_inventory = filtered_inventory[filtered_inventory["tags"].apply(self._has_maps_tag)].copy()
+
+        zip_links_by_source: dict[str, list[str]] = {}
+        source_meta: dict[str, dict[str, str]] = {}
+        for _, row in filtered_inventory.iterrows():
+            source_file = self._source_file_for_row(row)
+            links = self._split_pipe_values(str(row.get("zip_links", "") or ""))
+            if links:
+                existing = zip_links_by_source.get(source_file, [])
+                dedup = []
+                seen = set(existing)
+                for link in links:
+                    if link not in seen:
+                        seen.add(link)
+                        dedup.append(link)
+                zip_links_by_source[source_file] = existing + dedup
+
+            source_meta.setdefault(
+                source_file,
+                {
+                    "canonical_url": str(row.get("canonical_url", "") or "").strip(),
+                    "title": str(row.get("title", "") or "").strip(),
+                    "tags": str(row.get("tags", "") or "").strip(),
+                },
+            )
+
         existing_index = self._build_existing_file_index(legacy_root)
         if output_root.resolve() != legacy_root.resolve():
             output_index = self._build_existing_file_index(output_root)
@@ -296,11 +411,14 @@ class DownloadImagesStage(StageBase):
                 existing_index[file_name].extend(paths)
         session = self._build_session()
 
-        grouped = queue_df.groupby("source_file", dropna=False)
+        grouped = {str(key): group.copy() for key, group in queue_df.groupby("source_file", dropna=False)}
+        all_sources = sorted(set(grouped.keys()) | set(zip_links_by_source.keys()))
+        zip_rows: list[dict[str, str | int | float]] = []
         processed_assets = 0
         started = time.perf_counter()
 
-        for source_file, group in grouped:
+        for source_file in all_sources:
+            group = grouped.get(source_file, pd.DataFrame(columns=queue_df.columns))
             metrics["pages"] += 1
 
             folder_name = self._safe_folder_name(str(source_file))
@@ -308,8 +426,9 @@ class DownloadImagesStage(StageBase):
             if not self.dry_run:
                 folder_path.mkdir(parents=True, exist_ok=True)
 
-            source_https = str(group["canonical_url"].iloc[0] or "").strip()
-            tags = str(group["tags"].iloc[0] or "").strip()
+            fallback_meta = source_meta.get(source_file, {})
+            source_https = str((group["canonical_url"].iloc[0] if not group.empty else fallback_meta.get("canonical_url", "")) or "").strip()
+            tags = str((group["tags"].iloc[0] if not group.empty else fallback_meta.get("tags", "")) or "").strip()
 
             total = 0
             ok = 0
@@ -396,6 +515,53 @@ class DownloadImagesStage(StageBase):
                         extra={"stage": self.stage_name, "run_id": self.run_id},
                     )
 
+            zip_links = zip_links_by_source.get(source_file, [])
+            metrics["zip_links_total"] += len(zip_links)
+            for zip_url in zip_links:
+                if self.dry_run:
+                    metrics["zip_archives_processed"] += 1
+                    continue
+
+                try:
+                    response = session.get(zip_url, timeout=self.config.s03_timeout_seconds)
+                    response.raise_for_status()
+                    extracted_rows, skipped_existing = self._extract_images_from_zip(
+                        response.content,
+                        folder_path,
+                        source_file=source_file,
+                        zip_url=zip_url,
+                    )
+                    for extracted_row in extracted_rows:
+                        extracted_row["canonical_url"] = source_https
+                        extracted_row["title"] = str(fallback_meta.get("title", "") or "").strip()
+                        extracted_row["tags"] = tags
+
+                    metrics["zip_archives_processed"] += 1
+                    metrics["zip_images_extracted"] += len(extracted_rows) - skipped_existing
+                    metrics["zip_images_skipped_existing"] += skipped_existing
+                    if extracted_rows:
+                        total += len(extracted_rows)
+                        ok += len(extracted_rows)
+                        metrics["assets_total"] += len(extracted_rows)
+                        metrics["assets_ok"] += len(extracted_rows)
+                        processed_assets += len(extracted_rows)
+                        zip_rows.extend(extracted_rows)
+
+                    if self.config.s03_delay_seconds > 0:
+                        time.sleep(self.config.s03_delay_seconds)
+                except zipfile.BadZipFile:
+                    metrics["zip_archives_failed"] += 1
+                    self.logger.warning(
+                        f"Zip extraction failed (bad archive): {zip_url}",
+                        extra={"stage": self.stage_name, "run_id": self.run_id},
+                    )
+                except Exception as exc:
+                    metrics["zip_archives_failed"] += 1
+                    self.logger.warning(
+                        f"Zip extraction failed for {zip_url}: {exc}",
+                        extra={"stage": self.stage_name, "run_id": self.run_id},
+                    )
+
             if total == 0:
                 page_status = "no-images"
                 metrics["pages_no_images"] += 1
@@ -418,6 +584,18 @@ class DownloadImagesStage(StageBase):
                     "status": page_status,
                 }
             )
+
+        if zip_rows:
+            zip_df = pd.DataFrame(zip_rows)
+            queue_df = pd.concat([queue_df, zip_df], ignore_index=True)
+            queue_df = queue_df.drop_duplicates(subset=["source_file", "file_name"], keep="first")
+            queue_df = queue_df.sort_values(
+                by=["source_file", "file_stem", "file_name", "url"],
+                ascending=[True, True, True, True],
+            ).reset_index(drop=True)
+            if not self.dry_run:
+                queue_df.to_csv(self.config.download_queue_csv, index=False, encoding="utf-8-sig")
+                metrics["queue_rows"] = int(len(queue_df))
 
         if not self.dry_run:
             summary_df = pd.DataFrame(summary_rows)
