@@ -443,21 +443,78 @@ class CrawlMapsStage(StageBase):
         return delta_df, {"new": len(new_urls), "updated": len(updated_urls), "unchanged": unchanged_count}
 
     def _load_previous_index(self) -> pd.DataFrame | None:
-        if not self.config.blog_index_csv.exists():
-            if self.config.legacy_seed_csv.exists():
-                legacy = pd.read_csv(self.config.legacy_seed_csv, dtype=str).fillna("")
-                for col in ("published_date", "crawl_ts", "source_hash"):
-                    if col not in legacy.columns:
-                        legacy[col] = ""
-                keep = ["id", "name", "url", "tags", "published_date", "crawl_ts", "source_hash"]
-                return legacy[keep].copy()
+        def normalize_index(df: pd.DataFrame) -> pd.DataFrame:
+            out = df.copy()
+            for col in ("id", "name", "url", "tags", "published_date", "crawl_ts", "source_hash"):
+                if col not in out.columns:
+                    out[col] = ""
+            out = out[["id", "name", "url", "tags", "published_date", "crawl_ts", "source_hash"]].copy()
+            out["url"] = out["url"].astype(str).str.strip()
+            out = out[out["url"] != ""].copy()
+            return out
+
+        def load_legacy_seed() -> pd.DataFrame | None:
+            candidates = [
+                self.config.legacy_seed_csv,
+                self.config.workspace_root / "Dyson_Logos_Map_Catalogue - Dyson_Logos_Map_Catalogue.csv",
+            ]
+            for candidate in candidates:
+                if candidate.exists():
+                    legacy = normalize_index(pd.read_csv(candidate, dtype=str).fillna(""))
+                    if not legacy.empty:
+                        for idx, row in legacy.iterrows():
+                            if not str(row.get("published_date", "")).strip():
+                                legacy.at[idx, "published_date"] = _extract_date_from_url(str(row.get("url", "")))
+                            if not str(row.get("source_hash", "")).strip():
+                                legacy.at[idx, "source_hash"] = _record_hash(
+                                    url=str(legacy.at[idx, "url"]),
+                                    title=str(legacy.at[idx, "name"]),
+                                    tags=str(legacy.at[idx, "tags"]),
+                                    published_date=str(legacy.at[idx, "published_date"]),
+                                )
+                        return legacy
             return None
 
-        prev = pd.read_csv(self.config.blog_index_csv, dtype=str).fillna("")
-        for col in ("id", "name", "url", "tags", "published_date", "crawl_ts", "source_hash"):
-            if col not in prev.columns:
-                prev[col] = ""
-        return prev[["id", "name", "url", "tags", "published_date", "crawl_ts", "source_hash"]].copy()
+        legacy_df = load_legacy_seed()
+
+        if self.config.blog_index_csv.exists():
+            prev = normalize_index(pd.read_csv(self.config.blog_index_csv, dtype=str).fillna(""))
+            if legacy_df is None or legacy_df.empty:
+                return prev
+
+            merged = prev.set_index("url").to_dict(orient="index")
+            for _, row in legacy_df.iterrows():
+                url = str(row.get("url", "")).strip()
+                if not url:
+                    continue
+
+                if url not in merged:
+                    merged[url] = {k: str(row.get(k, "")) for k in ("id", "name", "tags", "published_date", "crawl_ts", "source_hash")}
+                    continue
+
+                current = merged[url]
+                for key in ("name", "tags", "published_date", "crawl_ts", "source_hash"):
+                    if not str(current.get(key, "")).strip() and str(row.get(key, "")).strip():
+                        current[key] = str(row.get(key, ""))
+
+            rows: list[dict[str, str]] = []
+            for url, values in merged.items():
+                rows.append(
+                    {
+                        "url": url,
+                        "name": str(values.get("name", "")),
+                        "tags": str(values.get("tags", "")),
+                        "published_date": str(values.get("published_date", "")),
+                        "crawl_ts": str(values.get("crawl_ts", "")),
+                        "source_hash": str(values.get("source_hash", "")),
+                    }
+                )
+            out = pd.DataFrame(rows)
+            out = out.sort_values(by=["published_date", "url"], ascending=[False, True]).reset_index(drop=True)
+            out.insert(0, "id", out.index.astype(int))
+            return out
+
+        return legacy_df
 
     def run_stage(self, force: bool = False) -> dict[str, Any]:
         previous_df = self._load_previous_index()

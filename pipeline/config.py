@@ -149,7 +149,7 @@ class PipelineConfig:
 
     @property
     def legacy_seed_csv(self) -> Path:
-        return self.workspace_root / "Dyson_Logos_Map_Catalogue - Dyson_Logos_Map_Catalogue.csv"
+        return self.workspace_root / "data" / "legacy" / "Dyson_Logos_Map_Catalogue - Dyson_Logos_Map_Catalogue.csv"
 
     def ensure_dirs(self) -> None:
         (self.workspace_root / self.raw_dir).mkdir(parents=True, exist_ok=True)
