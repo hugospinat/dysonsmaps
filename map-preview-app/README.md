@@ -1,11 +1,11 @@
 # Dyson Map Preview App
 
-Local React + TypeScript + Vite app to browse and preview maps from `download_queue.csv`.
+Local React + TypeScript + Vite app to browse and preview maps from `download_queue_web.json`.
 
 ## Data Source
 
-- CSV loaded from `public/data/download_queue.csv`
-- Local images served from `public/downloads/` (created as a junction to `../downloads`)
+- JSON loaded from `public/data/download_queue_web.json`
+- Local images served from `public/data/map_assets/`
 - Remote image URL used as fallback if local image is missing
 
 ## Install
@@ -28,8 +28,9 @@ npm run build
 
 ## Refresh Data
 
-If `download_queue.csv` changes in the repository root, recopy it:
+If the generated queue changes, rebuild the pipeline so `data/outputs/download_queue_web.json` is refreshed:
 
 ```powershell
-Copy-Item ..\download_queue.csv public\data\download_queue.csv -Force
+cd ..
+.\.venv\Scripts\python.exe scripts\run_pipeline.py --config conf\default.json --stage s04
 ```

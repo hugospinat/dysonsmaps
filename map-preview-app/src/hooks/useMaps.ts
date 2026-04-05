@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import type { MapItem } from "../types/MapItem";
-import { parseQueueCsv, parseQueueJson } from "../utils/parseCSV";
+import { parseQueueJson } from "../utils/parseCSV";
 
 interface UseMapsResult {
     items: MapItem[];
@@ -24,37 +24,15 @@ export const useMaps = (): UseMapsResult => {
 
             try {
                 const ts = Date.now();
-                const sources: Array<{ url: string; kind: "json" | "csv" }> = [
-                    { url: `/data/download_queue_web.json?ts=${ts}`, kind: "json" },
-                    { url: `/data/download_queue_web.csv?ts=${ts}`, kind: "csv" },
-                    { url: `/data/download_queue.csv?ts=${ts}`, kind: "csv" },
-                ];
+                const url = `/data/download_queue_web.json?ts=${ts}`;
+                const response = await fetch(url);
 
-                let parsedItems: MapItem[] = [];
-                let loaded = false;
-                let lastError = "";
-
-                for (const source of sources) {
-                    try {
-                        const response = await fetch(source.url);
-                        if (!response.ok) {
-                            lastError = `${source.url}: ${response.status} ${response.statusText}`;
-                            continue;
-                        }
-
-                        const text = await response.text();
-                        parsedItems = source.kind === "json" ? parseQueueJson(text) : parseQueueCsv(text);
-                        loaded = true;
-                        break;
-                    } catch (error) {
-                        const message = error instanceof Error ? error.message : String(error);
-                        lastError = `${source.url}: ${message}`;
-                    }
+                if (!response.ok) {
+                    throw new Error(`Unable to load queue dataset: ${url}: ${response.status} ${response.statusText}`);
                 }
 
-                if (!loaded) {
-                    throw new Error(`Unable to load queue dataset: ${lastError || "no available source"}`);
-                }
+                const text = await response.text();
+                const parsedItems = parseQueueJson(text);
 
                 if (!cancelled) {
                     setItems(parsedItems);
