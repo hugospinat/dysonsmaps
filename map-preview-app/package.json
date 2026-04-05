@@ -1,0 +1,33 @@
+{
+  "name": "map-preview-app",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Local preview app for Dyson map downloads",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview"
+  },
+  "keywords": [
+    "maps",
+    "vite",
+    "react"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "papaparse": "^5.5.3",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "react-window": "^2.2.7"
+  },
+  "devDependencies": {
+    "@types/papaparse": "^5.5.2",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^4.3.1",
+    "typescript": "^6.0.2",
+    "vite": "^5.4.19"
+  }
+}

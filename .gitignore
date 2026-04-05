@@ -1,0 +1,40 @@
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.python-version
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node / frontend
+node_modules/
+map-preview-app/node_modules/
+map-preview-app/dist/
+dist/
+build/
+*.tsbuildinfo
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Local environment
+.env
+.env.*
+
+# Generated project artifacts
+data/logs/
+data/raw/
+data/outputs/
+data/state/
+data/html_cache/
+map-preview-app/public/data/
