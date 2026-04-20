@@ -24,7 +24,6 @@ def _as_bool(value: object, default: bool) -> bool:
 @dataclass(frozen=True)
 class PipelineConfig:
     workspace_root: Path
-    maps_index_url: str = "https://dysonlogos.blog/maps/"
     maps_rss_url: str = "https://dysonlogos.blog/feed/"
     raw_dir: Path = Path("data/raw")
     html_cache_dir: Path = Path("data/html_cache")
@@ -54,7 +53,7 @@ class PipelineConfig:
     s04_preview_width: int = 640
     s04_preview_quality: int = 78
     s04_preview_format: str = "jpg"
-    s04_bw_threshold: float = 0.12
+    s04_bw_threshold: float = 0.08
     s04_bw_resize_max: int = 600
     s04_max_workers: int = 6
     s04_save_every: int = 200
@@ -148,15 +147,6 @@ class PipelineConfig:
     def s04_state_file(self) -> Path:
         return self.workspace_root / self.state_dir / "s04_generate_previews_state.json"
 
-    @property
-    def legacy_seed_csv(self) -> Path:
-        return (
-            self.workspace_root
-            / "data"
-            / "legacy"
-            / "Dyson_Logos_Map_Catalogue - Dyson_Logos_Map_Catalogue.csv"
-        )
-
     def ensure_dirs(self) -> None:
         (self.workspace_root / self.raw_dir).mkdir(parents=True, exist_ok=True)
         (self.workspace_root / self.html_cache_dir).mkdir(parents=True, exist_ok=True)
@@ -177,7 +167,6 @@ class PipelineConfig:
 
         payload = json.loads(config_path.read_text(encoding="utf-8"))
         remap = {
-            "maps_index_url": payload.get("maps_index_url", base.maps_index_url),
             "maps_rss_url": payload.get("maps_rss_url", base.maps_rss_url),
             "raw_dir": Path(payload.get("raw_dir", str(base.raw_dir))),
             "html_cache_dir": Path(

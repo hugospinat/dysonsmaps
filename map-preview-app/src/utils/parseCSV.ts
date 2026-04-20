@@ -47,7 +47,7 @@ const getCanonicalTag = (rawTag: string): string => {
     }
 
     if (normalized === "map" || normalized === "maps") {
-        return "Maps";
+        return "";
     }
 
     if (normalized === "rpg" || normalized === "rpgs") {

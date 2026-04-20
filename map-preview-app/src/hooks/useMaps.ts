@@ -7,7 +7,6 @@ interface UseMapsResult {
     loading: boolean;
     error: string | null;
     allTags: string[];
-    tagCounts: Map<string, number>;
 }
 
 export const useMaps = (): UseMapsResult => {
@@ -83,6 +82,5 @@ export const useMaps = (): UseMapsResult => {
         loading,
         error,
         allTags,
-        tagCounts,
     };
 };

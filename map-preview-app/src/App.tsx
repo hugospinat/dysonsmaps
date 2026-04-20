@@ -9,10 +9,9 @@ import type { MapItem } from "./types/MapItem";
 
 const App = () => {
     const DEFAULT_BW_TAG = "Black & White";
-    const { items, loading, error, allTags, tagCounts } = useMaps();
+    const { items, loading, error, allTags } = useMaps();
     const [query, setQuery] = useState("");
     const [selectedTags, setSelectedTags] = useState<Set<string>>(new Set());
-    const [excludedTags, setExcludedTags] = useState<Set<string>>(new Set());
     const [activeItemId, setActiveItemId] = useState<string | null>(null);
     const [bwDefaultApplied, setBwDefaultApplied] = useState(false);
     const [, startTransition] = useTransition();
@@ -20,8 +19,17 @@ const App = () => {
     const filteredItems = useSearch(items, {
         query,
         selectedTags,
-        excludedTags,
     });
+
+    const visibleTagCounts = useMemo(() => {
+        const counts = new Map<string, number>();
+        for (const item of filteredItems) {
+            for (const tag of item.tags) {
+                counts.set(tag, (counts.get(tag) || 0) + 1);
+            }
+        }
+        return counts;
+    }, [filteredItems]);
 
     const activeIndex = useMemo(() => {
         if (!activeItemId) {
@@ -40,7 +48,6 @@ const App = () => {
         setBwDefaultApplied(true);
         if (allTags.includes(DEFAULT_BW_TAG)) {
             setSelectedTags(new Set([DEFAULT_BW_TAG]));
-            setExcludedTags(new Set());
         }
     }, [allTags, bwDefaultApplied, loading, error]);
 
@@ -55,45 +62,12 @@ const App = () => {
                 }
                 return next;
             });
-
-            setExcludedTags((prev) => {
-                if (!prev.has(tag)) {
-                    return prev;
-                }
-                const next = new Set(prev);
-                next.delete(tag);
-                return next;
-            });
-        });
-    }, [startTransition]);
-
-    const toggleExcludeTag = useCallback((tag: string) => {
-        startTransition(() => {
-            setExcludedTags((prev) => {
-                const next = new Set(prev);
-                if (next.has(tag)) {
-                    next.delete(tag);
-                } else {
-                    next.add(tag);
-                }
-                return next;
-            });
-
-            setSelectedTags((prev) => {
-                if (!prev.has(tag)) {
-                    return prev;
-                }
-                const next = new Set(prev);
-                next.delete(tag);
-                return next;
-            });
         });
     }, [startTransition]);
 
     const clearTags = useCallback(() => {
         startTransition(() => {
             setSelectedTags(new Set());
-            setExcludedTags(new Set());
         });
     }, [startTransition]);
 
@@ -136,10 +110,8 @@ const App = () => {
                 <TagFilter
                     tags={allTags}
                     selectedTags={selectedTags}
-                    excludedTags={excludedTags}
-                    tagCounts={tagCounts}
+                    tagCounts={visibleTagCounts}
                     onToggleTag={toggleTag}
-                    onCycleSelectedTag={toggleExcludeTag}
                     onClear={clearTags}
                 />
             </aside>
