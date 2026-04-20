@@ -7,7 +7,6 @@ interface UseMapsResult {
     loading: boolean;
     error: string | null;
     allTags: string[];
-    tagCounts: Map<string, number>;
 }
 
 export const useMaps = (): UseMapsResult => {
@@ -57,17 +56,14 @@ export const useMaps = (): UseMapsResult => {
         };
     }, []);
 
-    const tagCounts = useMemo(() => {
-        const counts = new Map<string, number>();
+    const allTags = useMemo(() => {
+        const tagCounts = new Map<string, number>();
         for (const item of items) {
             for (const tag of item.tags) {
-                counts.set(tag, (counts.get(tag) || 0) + 1);
+                tagCounts.set(tag, (tagCounts.get(tag) || 0) + 1);
             }
         }
-        return counts;
-    }, [items]);
 
-    const allTags = useMemo(() => {
         return Array.from(tagCounts.entries())
             .sort((a, b) => {
                 if (b[1] !== a[1]) {
@@ -76,13 +72,12 @@ export const useMaps = (): UseMapsResult => {
                 return a[0].localeCompare(b[0]);
             })
             .map((entry) => entry[0]);
-    }, [tagCounts]);
+    }, [items]);
 
     return {
         items,
         loading,
         error,
         allTags,
-        tagCounts,
     };
 };

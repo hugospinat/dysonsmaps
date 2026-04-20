@@ -5,7 +5,7 @@
 This repository has two parts that work together:
 
 1. Python pipeline
-- Crawls Dyson Logos map pages (needs an update)
+- Crawls the Dyson Logos RSS feed for map posts
 - Caches HTML
 - Extracts image candidates and tags
 - Downloads selected assets
@@ -96,3 +96,4 @@ This starts the Vite app in a container and mounts `data/outputs` into `map-prev
 - Docker is not required for the Python pipeline.
 - The recommended workflow is: run pipeline locally with `.venv`, then run frontend locally or with Docker.
 - Tag cleanup (including singular/plural fusion and canonicalization) is done in S04 before data reaches the app.
+- The generic `Maps` tag is filtered out in the frontend UI because every record already comes from the maps feed.

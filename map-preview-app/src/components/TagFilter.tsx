@@ -3,20 +3,16 @@ import { useMemo, useState } from "react";
 interface TagFilterProps {
     tags: string[];
     selectedTags: Set<string>;
-    excludedTags: Set<string>;
     tagCounts: Map<string, number>;
     onToggleTag: (tag: string) => void;
-    onCycleSelectedTag: (tag: string) => void;
     onClear: () => void;
 }
 
 export const TagFilter = ({
     tags,
     selectedTags,
-    excludedTags,
     tagCounts,
     onToggleTag,
-    onCycleSelectedTag,
     onClear,
 }: TagFilterProps) => {
     const [tagQuery, setTagQuery] = useState("");
@@ -69,27 +65,16 @@ export const TagFilter = ({
             <div className="selected-tags-panel" aria-label="Selected tags summary">
                 <p className="selected-tags-title">Selected tags</p>
                 <div className="selected-tags-list">
-                    {selectedTags.size === 0 && excludedTags.size === 0 ? <span className="selected-tags-empty">None</span> : null}
+                    {selectedTags.size === 0 ? <span className="selected-tags-empty">None</span> : null}
                     {Array.from(selectedTags).map((tag) => (
                         <button
                             key={`include-${tag}`}
                             type="button"
                             className="selected-tag-chip"
-                            onClick={() => onCycleSelectedTag(tag)}
-                            title={`Set ${tag} to exclude`}
+                            onClick={() => onToggleTag(tag)}
+                            title={`Remove ${tag}`}
                         >
-                            {tag} (include)
-                        </button>
-                    ))}
-                    {Array.from(excludedTags).map((tag) => (
-                        <button
-                            key={`exclude-${tag}`}
-                            type="button"
-                            className="selected-tag-chip excluded"
-                            onClick={() => onCycleSelectedTag(tag)}
-                            title={`Remove excluded ${tag}`}
-                        >
-                            {tag} (exclude)
+                            {tag}
                         </button>
                     ))}
                 </div>

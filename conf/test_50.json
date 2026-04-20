@@ -1,5 +1,5 @@
 {
-    "maps_index_url": "https://dysonlogos.blog/maps/",
+    "maps_rss_url": "https://dysonlogos.blog/feed/",
     "raw_dir": "data/raw",
     "html_cache_dir": "data/html_cache",
     "state_dir": "data/state",
@@ -27,7 +27,7 @@
     "s04_preview_width": 640,
     "s04_preview_quality": 78,
     "s04_preview_format": "jpg",
-    "s04_bw_threshold": 0.12,
+    "s04_bw_threshold": 0.08,
     "s04_bw_resize_max": 600,
     "s04_max_workers": 6,
     "s04_save_every": 200,

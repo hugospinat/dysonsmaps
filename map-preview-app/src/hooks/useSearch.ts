@@ -4,7 +4,6 @@ import type { MapItem } from "../types/MapItem";
 interface SearchOptions {
     query: string;
     selectedTags: Set<string>;
-    excludedTags: Set<string>;
 }
 
 const buildTagIndex = (items: MapItem[]): Map<string, number[]> => {
@@ -75,26 +74,11 @@ export const useSearch = (items: MapItem[], options: SearchOptions): MapItem[] =
             }
         }
 
-        if (options.excludedTags.size > 0 && candidateIndices.length > 0) {
-            const excludedUnion = new Set<number>();
-            for (const tag of options.excludedTags) {
-                const indices = tagIndex.get(tag);
-                if (!indices) {
-                    continue;
-                }
-                indices.forEach((idx) => excludedUnion.add(idx));
-            }
-
-            if (excludedUnion.size > 0) {
-                candidateIndices = candidateIndices.filter((idx) => !excludedUnion.has(idx));
-            }
-        }
-
         const candidateItems = candidateIndices.map((idx) => items[idx]);
         if (!normalizedQuery) {
             return candidateItems;
         }
 
         return candidateItems.filter((item) => item.searchBlob.includes(normalizedQuery));
-    }, [allIndices, items, normalizedQuery, options.excludedTags, options.selectedTags, tagIndex]);
+    }, [allIndices, items, normalizedQuery, options.selectedTags, tagIndex]);
 };
