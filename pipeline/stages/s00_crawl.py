@@ -4,12 +4,13 @@ import hashlib
 import re
 import time
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any
-from urllib.parse import urljoin, urlparse
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+import xml.etree.ElementTree as ET
 
 import pandas as pd
 import requests
-from bs4 import BeautifulSoup
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
@@ -17,26 +18,6 @@ from .stage_base import StageBase
 
 
 URL_DATE_RE = re.compile(r"/(20\d{2})/(\d{2})/(\d{2})/")
-POST_URL_RE = re.compile(r"^https?://dysonlogos\.blog/20\d{2}/\d{2}/\d{2}/[^/]+/?$")
-
-GROUP_LABEL_KEYWORDS = {
-    "geomorph",
-    "downloadable",
-    "adventures",
-    "dysons delve",
-    "dyson's delve",
-    "kevin campbell",
-    "urban",
-    "cities",
-    "towns",
-    "multi-map",
-    "multi-page",
-    "megadelve",
-    "jakalla",
-    "darkling",
-    "barrier peaks",
-    "sewers",
-}
 
 
 def _slug(text: str) -> str:
@@ -52,117 +33,97 @@ def _extract_date_from_url(url: str) -> str:
     return f"{year}-{month}-{day}"
 
 
-def _extract_post_links(soup: BeautifulSoup, base_url: str) -> list[tuple[str, str]]:
-    items: list[tuple[str, str]] = []
-    seen: set[str] = set()
+def _local_name(tag: str) -> str:
+    if "}" in tag:
+        return tag.rsplit("}", 1)[-1]
+    return tag
 
-    selectors = [
-        "article h2.entry-title a[href]",
-        "article h1.entry-title a[href]",
-        "article a[rel='bookmark'][href]",
-    ]
 
-    for selector in selectors:
-        for anchor in soup.select(selector):
-            href = str(anchor.get("href", "")).strip()
-            if not href:
-                continue
-            url = urljoin(base_url, href)
-            if "/20" not in url:
-                continue
-            if url in seen:
-                continue
-            title = _slug(anchor.get_text(" ", strip=True))
-            if not title:
-                continue
-            seen.add(url)
-            items.append((url, title))
+def _xml_child_text(node: ET.Element, child_name: str) -> str:
+    for child in list(node):
+        if _local_name(str(child.tag)) == child_name:
+            return _slug(child.text or "")
+    return ""
 
-    # Fallback for pages where map links are rendered without entry-title wrappers.
-    if not items:
-        for anchor in soup.find_all("a", href=True):
-            href = str(anchor.get("href", "")).strip()
-            if not href:
-                continue
-            url = urljoin(base_url, href)
-            if not POST_URL_RE.match(url):
-                continue
-            if url in seen:
-                continue
-            seen.add(url)
-            title = _slug(anchor.get_text(" ", strip=True))
-            items.append((url, title))
 
+def _xml_children_text(node: ET.Element, child_name: str) -> list[str]:
+    out: list[str] = []
+    for child in list(node):
+        if _local_name(str(child.tag)) != child_name:
+            continue
+        value = _slug(child.text or "")
+        if value:
+            out.append(value)
+    return out
+
+
+def _rss_items(xml_text: str) -> list[dict[str, Any]]:
+    root = ET.fromstring(xml_text)
+
+    channel: ET.Element | None = None
+    if _local_name(str(root.tag)) == "channel":
+        channel = root
+    else:
+        for node in root.iter():
+            if _local_name(str(node.tag)) == "channel":
+                channel = node
+                break
+
+    if channel is None:
+        raise RuntimeError("RSS parse error: channel node not found.")
+
+    items: list[dict[str, Any]] = []
+    for node in list(channel):
+        if _local_name(str(node.tag)) != "item":
+            continue
+        items.append(
+            {
+                "title": _xml_child_text(node, "title"),
+                "url": _xml_child_text(node, "link"),
+                "pub_date_raw": _xml_child_text(node, "pubDate"),
+                "categories": _xml_children_text(node, "category"),
+            }
+        )
     return items
 
 
-def _normalize_label(value: str) -> str:
-    text = _slug(value).lower()
-    text = re.sub(r"[^a-z0-9\s!']+", " ", text)
-    text = re.sub(r"\s+", " ", text).strip()
-    return text
+def _published_date_from_rss(pub_date_raw: str, url: str) -> str:
+    text = _slug(pub_date_raw)
+    if text:
+        try:
+            parsed = parsedate_to_datetime(text)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            else:
+                parsed = parsed.astimezone(timezone.utc)
+            return parsed.date().isoformat()
+        except (TypeError, ValueError, OverflowError):
+            pass
+    return _extract_date_from_url(url)
 
 
-def _looks_like_group_label(label: str) -> bool:
-    norm = _normalize_label(label)
-    return any(keyword in norm for keyword in GROUP_LABEL_KEYWORDS)
+def _rss_page_url(base_url: str, page_number: int) -> str:
+    if page_number <= 1:
+        return base_url
 
-
-def _extract_group_archive_links(soup: BeautifulSoup, base_url: str) -> list[tuple[str, str]]:
-    group_links: list[tuple[str, str]] = []
-    seen: set[str] = set()
-
-    for anchor in soup.find_all("a", href=True):
-        href = str(anchor.get("href", "")).strip()
-        label = _slug(anchor.get_text(" ", strip=True))
-        if not href or not label:
-            continue
-
-        url = urljoin(base_url, href)
-        parsed = urlparse(url)
-        host = parsed.netloc.lower()
-        path = parsed.path.rstrip("/").lower()
-
-        if parsed.query or parsed.fragment:
-            continue
-        if "dysonlogos.blog" not in host:
-            continue
-        if POST_URL_RE.match(url):
-            continue
-        if path in {"", "/maps"}:
-            continue
-
-        in_maps_section = path.startswith("/maps/")
-        explicit_group_label = _looks_like_group_label(label)
-        explicit_group_path = "/zerobarrier/dysons-delves" in path
-
-        if not (in_maps_section or explicit_group_label or explicit_group_path):
-            continue
-
-        if url in seen:
-            continue
-
-        seen.add(url)
-        group_links.append((url, label))
-
-    return group_links
-
-
-def _find_next_page(soup: BeautifulSoup, current_url: str) -> str | None:
-    selectors = [
-        "a.next.page-numbers[href]",
-        "a.next[href]",
-        "a[rel='next'][href]",
-    ]
-    for selector in selectors:
-        node = soup.select_one(selector)
-        if node and node.get("href"):
-            return urljoin(current_url, str(node.get("href")))
-    return None
+    parsed = urlsplit(base_url)
+    query_pairs = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    query_pairs["paged"] = str(page_number)
+    return urlunsplit(
+        (
+            parsed.scheme,
+            parsed.netloc,
+            parsed.path,
+            urlencode(query_pairs),
+            parsed.fragment,
+        )
+    )
 
 
 def _record_hash(url: str, title: str, tags: str, published_date: str) -> str:
-    value = "||".join([url.strip(), title.strip(), tags.strip(), published_date.strip()])
+    value = "||".join(
+        [url.strip(), title.strip(), tags.strip(), published_date.strip()]
+    )
     return hashlib.sha256(value.encode("utf-8", errors="ignore")).hexdigest()
 
 
@@ -170,6 +131,7 @@ class CrawlMapsStage(StageBase):
     stage_name = "s00_crawl"
     progress_log_every = 10
     slow_request_seconds = 8.0
+    required_category = "Maps"
 
     def output_paths(self) -> list[str]:
         return [
@@ -182,7 +144,9 @@ class CrawlMapsStage(StageBase):
         session = requests.Session()
         session.headers.update({"User-Agent": self.config.user_agent})
 
-        retry = Retry(total=3, backoff_factor=0.4, status_forcelist=[429, 500, 502, 503, 504])
+        retry = Retry(
+            total=3, backoff_factor=0.4, status_forcelist=[429, 500, 502, 503, 504]
+        )
         adapter = HTTPAdapter(max_retries=retry)
         session.mount("http://", adapter)
         session.mount("https://", adapter)
@@ -208,63 +172,90 @@ class CrawlMapsStage(StageBase):
         now_iso = datetime.now(timezone.utc).isoformat()
         posts: list[dict[str, str]] = []
         seen_urls: set[str] = set()
+        seen_page_signatures: set[tuple[str, ...]] = set()
         crawl_started = time.perf_counter()
+        total_feed_items = 0
+        pages_fetched = 0
 
-        archive_queue: list[str] = [self.config.maps_index_url]
-        seen_archive_urls: set[str] = set()
-        page_count = 0
+        self.logger.info(
+            f"Fetching RSS feed: {self.config.maps_rss_url}",
+            extra={"stage": self.stage_name, "run_id": self.run_id},
+        )
 
-        while archive_queue and page_count < self.config.max_pages:
-            page_url = archive_queue.pop(0)
-            if page_url in seen_archive_urls:
-                continue
+        page_number = 1
+        while True:
+            if self.config.max_pages > 0 and page_number > self.config.max_pages:
+                self.logger.info(
+                    (
+                        "RSS pagination stopped due to max_pages limit: "
+                        f"{self.config.max_pages}"
+                    ),
+                    extra={"stage": self.stage_name, "run_id": self.run_id},
+                )
+                break
 
-            seen_archive_urls.add(page_url)
-            page_count += 1
+            page_url = _rss_page_url(self.config.maps_rss_url, page_number)
+            xml_text = self._fetch(session, page_url)
+            items = _rss_items(xml_text)
+            pages_fetched += 1
+
+            if not items:
+                self.logger.info(
+                    f"RSS page {page_number} returned 0 items; stopping pagination.",
+                    extra={"stage": self.stage_name, "run_id": self.run_id},
+                )
+                break
+
+            total_feed_items += len(items)
+            page_urls = sorted(
+                {
+                    _slug(str(item.get("url", "")))
+                    for item in items
+                    if _slug(str(item.get("url", "")))
+                }
+            )
+            page_signature = tuple(page_urls)
+            if page_signature in seen_page_signatures:
+                self.logger.info(
+                    f"RSS page {page_number} duplicated previous page content; stopping pagination.",
+                    extra={"stage": self.stage_name, "run_id": self.run_id},
+                )
+                break
+            seen_page_signatures.add(page_signature)
+
             self.logger.info(
-                f"Crawling archive page {page_count}: {page_url} (queue_remaining={len(archive_queue)})",
+                f"RSS page {page_number}: {len(items)} items before filters.",
                 extra={"stage": self.stage_name, "run_id": self.run_id},
             )
-            html = self._fetch(session, page_url)
-            soup = BeautifulSoup(html, "html.parser")
 
-            if page_url == self.config.maps_index_url:
-                group_links = _extract_group_archive_links(soup, page_url)
-                for group_url, _ in group_links:
-                    if group_url not in seen_archive_urls and group_url not in archive_queue:
-                        archive_queue.append(group_url)
-                if group_links:
-                    self.logger.info(
-                        (
-                            f"Discovered {len(group_links)} group archive links from maps page: "
-                            + ", ".join(name for _, name in group_links)
-                        ),
-                        extra={"stage": self.stage_name, "run_id": self.run_id},
-                    )
-
-            links = _extract_post_links(soup, page_url)
-            self.logger.info(
-                (
-                    f"Archive page {page_count} discovered {len(links)} candidate posts "
-                    f"(unique collected: {len(seen_urls)})"
-                ),
-                extra={"stage": self.stage_name, "run_id": self.run_id},
-            )
-
-            for url, title in links:
-                if url in seen_urls:
+            for item in items:
+                url = _slug(str(item.get("url", "")))
+                if not url or url in seen_urls:
                     continue
                 seen_urls.add(url)
+
+                categories = [
+                    value for value in item.get("categories", []) if _slug(value)
+                ]
+                if self.required_category not in categories:
+                    continue
 
                 if self.config.max_posts > 0 and len(posts) >= self.config.max_posts:
                     break
 
-                # Index-only crawl: do not request individual post pages here.
-                title = _slug(title) or self._title_from_url(url)
-                published = _extract_date_from_url(url)
-                tags = ""
+                title = _slug(str(item.get("title", ""))) or self._title_from_url(url)
+                published = _published_date_from_rss(
+                    str(item.get("pub_date_raw", "")),
+                    url,
+                )
+                tags = ", ".join(categories)
 
-                source_hash = _record_hash(url=url, title=title, tags=tags, published_date=published)
+                source_hash = _record_hash(
+                    url=url,
+                    title=title,
+                    tags=tags,
+                    published_date=published,
+                )
                 posts.append(
                     {
                         "name": title,
@@ -280,7 +271,7 @@ class CrawlMapsStage(StageBase):
                     elapsed = time.perf_counter() - crawl_started
                     self.logger.info(
                         (
-                            f"Crawl progress: processed={len(posts)} posts "
+                            f"RSS progress: kept={len(posts)} posts "
                             f"after {elapsed:.1f}s, latest_date={published or 'unknown'}"
                         ),
                         extra={"stage": self.stage_name, "run_id": self.run_id},
@@ -289,28 +280,16 @@ class CrawlMapsStage(StageBase):
             if self.config.max_posts > 0 and len(posts) >= self.config.max_posts:
                 break
 
-            next_page = _find_next_page(soup, page_url)
-            if next_page and next_page != page_url:
-                if next_page not in seen_archive_urls and next_page not in archive_queue:
-                    archive_queue.append(next_page)
-                    self.logger.info(
-                        f"Queued pagination page: {next_page}",
-                        extra={"stage": self.stage_name, "run_id": self.run_id},
-                    )
-
-            if not archive_queue:
-                elapsed = time.perf_counter() - crawl_started
-                self.logger.info(
-                    f"Archive queue exhausted after page {page_count}; crawl stopping at {len(posts)} posts in {elapsed:.1f}s",
-                    extra={"stage": self.stage_name, "run_id": self.run_id},
-                )
-                break
-
             time.sleep(self.config.request_delay_seconds)
+            page_number += 1
 
         elapsed = time.perf_counter() - crawl_started
         self.logger.info(
-            f"Crawl loop finished: pages={page_count}, posts={len(posts)}, duration={elapsed:.1f}s",
+            (
+                f"RSS crawl finished: pages={pages_fetched}, "
+                f"feed_items={total_feed_items}, maps_posts={len(posts)}, "
+                f"duration={elapsed:.1f}s"
+            ),
             extra={"stage": self.stage_name, "run_id": self.run_id},
         )
 
@@ -318,15 +297,29 @@ class CrawlMapsStage(StageBase):
 
     def _with_ids(self, rows: list[dict[str, str]]) -> pd.DataFrame:
         if not rows:
-            return pd.DataFrame(columns=["id", "name", "url", "tags", "published_date", "crawl_ts", "source_hash"])
+            return pd.DataFrame(
+                columns=[
+                    "id",
+                    "name",
+                    "url",
+                    "tags",
+                    "published_date",
+                    "crawl_ts",
+                    "source_hash",
+                ]
+            )
 
         df = pd.DataFrame(rows)
         df = df.drop_duplicates(subset=["url"], keep="first").copy()
-        df = df.sort_values(by=["published_date", "url"], ascending=[False, True]).reset_index(drop=True)
+        df = df.sort_values(
+            by=["published_date", "url"], ascending=[False, True]
+        ).reset_index(drop=True)
         df.insert(0, "id", df.index.astype(int))
         return df
 
-    def _enrich_with_previous_metadata(self, crawled_df: pd.DataFrame, previous_df: pd.DataFrame | None) -> pd.DataFrame:
+    def _enrich_with_previous_metadata(
+        self, crawled_df: pd.DataFrame, previous_df: pd.DataFrame | None
+    ) -> pd.DataFrame:
         if previous_df is None or previous_df.empty:
             return crawled_df
 
@@ -345,10 +338,16 @@ class CrawlMapsStage(StageBase):
 
             prev_row = prev_by_url[url]
 
-            if not str(row.get("name", "")).strip() and str(prev_row.get("name", "")).strip():
+            if (
+                not str(row.get("name", "")).strip()
+                and str(prev_row.get("name", "")).strip()
+            ):
                 out.at[idx, "name"] = str(prev_row.get("name", ""))
 
-            if not str(row.get("published_date", "")).strip() and str(prev_row.get("published_date", "")).strip():
+            if (
+                not str(row.get("published_date", "")).strip()
+                and str(prev_row.get("published_date", "")).strip()
+            ):
                 out.at[idx, "published_date"] = str(prev_row.get("published_date", ""))
 
             # Keep richer tags/source hash from previous run when available.
@@ -359,8 +358,14 @@ class CrawlMapsStage(StageBase):
 
         return out
 
-    def _merge_with_history(self, crawled_df: pd.DataFrame, previous_df: pd.DataFrame | None) -> tuple[pd.DataFrame, int]:
-        if previous_df is None or previous_df.empty or not self.config.carry_forward_missing:
+    def _merge_with_history(
+        self, crawled_df: pd.DataFrame, previous_df: pd.DataFrame | None
+    ) -> tuple[pd.DataFrame, int]:
+        if (
+            previous_df is None
+            or previous_df.empty
+            or not self.config.carry_forward_missing
+        ):
             return crawled_df, 0
 
         prev = previous_df.copy()
@@ -376,7 +381,9 @@ class CrawlMapsStage(StageBase):
 
         for idx, row in carry_df.iterrows():
             if not str(row.get("published_date", "")).strip():
-                carry_df.at[idx, "published_date"] = _extract_date_from_url(str(row.get("url", "")))
+                carry_df.at[idx, "published_date"] = _extract_date_from_url(
+                    str(row.get("url", ""))
+                )
             if not str(row.get("source_hash", "")).strip():
                 carry_df.at[idx, "source_hash"] = _record_hash(
                     url=str(row.get("url", "")),
@@ -386,14 +393,26 @@ class CrawlMapsStage(StageBase):
                 )
 
         crawled_no_id = crawled_df.drop(columns=["id"], errors="ignore")
-        merged = pd.concat([crawled_no_id, carry_df[["name", "url", "tags", "published_date", "crawl_ts", "source_hash"]]], ignore_index=True)
+        merged = pd.concat(
+            [
+                crawled_no_id,
+                carry_df[
+                    ["name", "url", "tags", "published_date", "crawl_ts", "source_hash"]
+                ],
+            ],
+            ignore_index=True,
+        )
         merged = merged.drop_duplicates(subset=["url"], keep="first").copy()
-        merged = merged.sort_values(by=["published_date", "url"], ascending=[False, True]).reset_index(drop=True)
+        merged = merged.sort_values(
+            by=["published_date", "url"], ascending=[False, True]
+        ).reset_index(drop=True)
         merged = merged.drop(columns=["id"], errors="ignore")
         merged.insert(0, "id", merged.index.astype(int))
         return merged, int(len(carry_df))
 
-    def _build_delta(self, current_df: pd.DataFrame, previous_df: pd.DataFrame | None) -> tuple[pd.DataFrame, dict[str, int]]:
+    def _build_delta(
+        self, current_df: pd.DataFrame, previous_df: pd.DataFrame | None
+    ) -> tuple[pd.DataFrame, dict[str, int]]:
         if previous_df is None or previous_df.empty:
             delta = current_df[["url", "name", "published_date", "source_hash"]].copy()
             delta.insert(0, "change_type", "new")
@@ -437,18 +456,47 @@ class CrawlMapsStage(StageBase):
         delta_df = pd.DataFrame(rows)
         if delta_df.empty:
             delta_df = pd.DataFrame(
-                columns=["change_type", "url", "name", "published_date", "old_source_hash", "new_source_hash"]
+                columns=[
+                    "change_type",
+                    "url",
+                    "name",
+                    "published_date",
+                    "old_source_hash",
+                    "new_source_hash",
+                ]
             )
 
-        return delta_df, {"new": len(new_urls), "updated": len(updated_urls), "unchanged": unchanged_count}
+        return delta_df, {
+            "new": len(new_urls),
+            "updated": len(updated_urls),
+            "unchanged": unchanged_count,
+        }
 
     def _load_previous_index(self) -> pd.DataFrame | None:
         def normalize_index(df: pd.DataFrame) -> pd.DataFrame:
             out = df.copy()
-            for col in ("id", "name", "url", "tags", "published_date", "crawl_ts", "source_hash"):
+            for col in (
+                "id",
+                "name",
+                "url",
+                "tags",
+                "published_date",
+                "crawl_ts",
+                "source_hash",
+            ):
                 if col not in out.columns:
                     out[col] = ""
-            out = out[["id", "name", "url", "tags", "published_date", "crawl_ts", "source_hash"]].copy()
+            out = out[
+                [
+                    "id",
+                    "name",
+                    "url",
+                    "tags",
+                    "published_date",
+                    "crawl_ts",
+                    "source_hash",
+                ]
+            ].copy()
             out["url"] = out["url"].astype(str).str.strip()
             out = out[out["url"] != ""].copy()
             return out
@@ -456,21 +504,28 @@ class CrawlMapsStage(StageBase):
         def load_legacy_seed() -> pd.DataFrame | None:
             candidates = [
                 self.config.legacy_seed_csv,
-                self.config.workspace_root / "Dyson_Logos_Map_Catalogue - Dyson_Logos_Map_Catalogue.csv",
+                self.config.workspace_root
+                / "Dyson_Logos_Map_Catalogue - Dyson_Logos_Map_Catalogue.csv",
             ]
             for candidate in candidates:
                 if candidate.exists():
-                    legacy = normalize_index(pd.read_csv(candidate, dtype=str).fillna(""))
+                    legacy = normalize_index(
+                        pd.read_csv(candidate, dtype=str).fillna("")
+                    )
                     if not legacy.empty:
                         for idx, row in legacy.iterrows():
                             if not str(row.get("published_date", "")).strip():
-                                legacy.at[idx, "published_date"] = _extract_date_from_url(str(row.get("url", "")))
+                                legacy.at[idx, "published_date"] = (
+                                    _extract_date_from_url(str(row.get("url", "")))
+                                )
                             if not str(row.get("source_hash", "")).strip():
                                 legacy.at[idx, "source_hash"] = _record_hash(
                                     url=str(legacy.at[idx, "url"]),
                                     title=str(legacy.at[idx, "name"]),
                                     tags=str(legacy.at[idx, "tags"]),
-                                    published_date=str(legacy.at[idx, "published_date"]),
+                                    published_date=str(
+                                        legacy.at[idx, "published_date"]
+                                    ),
                                 )
                         return legacy
             return None
@@ -478,7 +533,9 @@ class CrawlMapsStage(StageBase):
         legacy_df = load_legacy_seed()
 
         if self.config.blog_index_csv.exists():
-            prev = normalize_index(pd.read_csv(self.config.blog_index_csv, dtype=str).fillna(""))
+            prev = normalize_index(
+                pd.read_csv(self.config.blog_index_csv, dtype=str).fillna("")
+            )
             if legacy_df is None or legacy_df.empty:
                 return prev
 
@@ -489,12 +546,31 @@ class CrawlMapsStage(StageBase):
                     continue
 
                 if url not in merged:
-                    merged[url] = {k: str(row.get(k, "")) for k in ("id", "name", "tags", "published_date", "crawl_ts", "source_hash")}
+                    merged[url] = {
+                        k: str(row.get(k, ""))
+                        for k in (
+                            "id",
+                            "name",
+                            "tags",
+                            "published_date",
+                            "crawl_ts",
+                            "source_hash",
+                        )
+                    }
                     continue
 
                 current = merged[url]
-                for key in ("name", "tags", "published_date", "crawl_ts", "source_hash"):
-                    if not str(current.get(key, "")).strip() and str(row.get(key, "")).strip():
+                for key in (
+                    "name",
+                    "tags",
+                    "published_date",
+                    "crawl_ts",
+                    "source_hash",
+                ):
+                    if (
+                        not str(current.get(key, "")).strip()
+                        and str(row.get(key, "")).strip()
+                    ):
                         current[key] = str(row.get(key, ""))
 
             rows: list[dict[str, str]] = []
@@ -510,7 +586,9 @@ class CrawlMapsStage(StageBase):
                     }
                 )
             out = pd.DataFrame(rows)
-            out = out.sort_values(by=["published_date", "url"], ascending=[False, True]).reset_index(drop=True)
+            out = out.sort_values(
+                by=["published_date", "url"], ascending=[False, True]
+            ).reset_index(drop=True)
             out.insert(0, "id", out.index.astype(int))
             return out
 
@@ -529,15 +607,22 @@ class CrawlMapsStage(StageBase):
         current_df, carried_forward = self._merge_with_history(crawled_df, previous_df)
         if carried_forward > 0:
             self.logger.info(
-                f"Carry-forward applied: {carried_forward} historical URLs not present on current maps page.",
+                (
+                    f"Carry-forward applied: {carried_forward} historical URLs "
+                    "not present in current RSS feed snapshot."
+                ),
                 extra={"stage": self.stage_name, "run_id": self.run_id},
             )
 
         delta_df, delta_counts = self._build_delta(current_df, previous_df)
 
         if not self.dry_run:
-            current_df.to_csv(self.config.blog_index_csv, index=False, encoding="utf-8-sig")
-            delta_df.to_csv(self.config.blog_delta_csv, index=False, encoding="utf-8-sig")
+            current_df.to_csv(
+                self.config.blog_index_csv, index=False, encoding="utf-8-sig"
+            )
+            delta_df.to_csv(
+                self.config.blog_delta_csv, index=False, encoding="utf-8-sig"
+            )
 
             state_payload = {
                 "stage": self.stage_name,
@@ -545,7 +630,10 @@ class CrawlMapsStage(StageBase):
                 "ran_at": datetime.now(timezone.utc).isoformat(),
                 "total_rows": int(len(current_df)),
                 "delta": delta_counts,
-                "output_files": [str(self.config.blog_index_csv), str(self.config.blog_delta_csv)],
+                "output_files": [
+                    str(self.config.blog_index_csv),
+                    str(self.config.blog_delta_csv),
+                ],
             }
             self._write_json(self.config.s00_state_file, state_payload)
 

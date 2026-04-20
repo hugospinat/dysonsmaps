@@ -1,5 +1,6 @@
 {
     "maps_index_url": "https://dysonlogos.blog/maps/",
+    "maps_rss_url": "https://dysonlogos.blog/feed/",
     "raw_dir": "data/raw",
     "html_cache_dir": "data/html_cache",
     "state_dir": "data/state",
@@ -7,7 +8,7 @@
     "user_agent": "Mozilla/5.0 (compatible; DysonPipeline/2.0)",
     "timeout_seconds": 30,
     "request_delay_seconds": 0.6,
-    "max_pages": 120,
+    "max_pages": 0,
     "max_posts": 0,
     "s01_refetch_existing_on_full": false,
     "s02_max_workers": 6,

@@ -25,6 +25,7 @@ def _as_bool(value: object, default: bool) -> bool:
 class PipelineConfig:
     workspace_root: Path
     maps_index_url: str = "https://dysonlogos.blog/maps/"
+    maps_rss_url: str = "https://dysonlogos.blog/feed/"
     raw_dir: Path = Path("data/raw")
     html_cache_dir: Path = Path("data/html_cache")
     state_dir: Path = Path("data/state")
@@ -32,7 +33,7 @@ class PipelineConfig:
     user_agent: str = "Mozilla/5.0 (compatible; DysonPipeline/2.0)"
     timeout_seconds: int = 30
     request_delay_seconds: float = 0.6
-    max_pages: int = 120
+    max_pages: int = 0
     max_posts: int = 0
     s01_refetch_existing_on_full: bool = False
     s02_max_workers: int = 4
@@ -149,7 +150,12 @@ class PipelineConfig:
 
     @property
     def legacy_seed_csv(self) -> Path:
-        return self.workspace_root / "data" / "legacy" / "Dyson_Logos_Map_Catalogue - Dyson_Logos_Map_Catalogue.csv"
+        return (
+            self.workspace_root
+            / "data"
+            / "legacy"
+            / "Dyson_Logos_Map_Catalogue - Dyson_Logos_Map_Catalogue.csv"
+        )
 
     def ensure_dirs(self) -> None:
         (self.workspace_root / self.raw_dir).mkdir(parents=True, exist_ok=True)
@@ -160,7 +166,9 @@ class PipelineConfig:
         self.s04_preview_root.mkdir(parents=True, exist_ok=True)
 
     @classmethod
-    def from_json(cls, workspace_root: Path, config_path: Path | None = None) -> "PipelineConfig":
+    def from_json(
+        cls, workspace_root: Path, config_path: Path | None = None
+    ) -> "PipelineConfig":
         base = cls(workspace_root=workspace_root)
         if config_path is None:
             return base
@@ -170,56 +178,107 @@ class PipelineConfig:
         payload = json.loads(config_path.read_text(encoding="utf-8"))
         remap = {
             "maps_index_url": payload.get("maps_index_url", base.maps_index_url),
+            "maps_rss_url": payload.get("maps_rss_url", base.maps_rss_url),
             "raw_dir": Path(payload.get("raw_dir", str(base.raw_dir))),
-            "html_cache_dir": Path(payload.get("html_cache_dir", str(base.html_cache_dir))),
+            "html_cache_dir": Path(
+                payload.get("html_cache_dir", str(base.html_cache_dir))
+            ),
             "state_dir": Path(payload.get("state_dir", str(base.state_dir))),
             "logs_dir": Path(payload.get("logs_dir", str(base.logs_dir))),
             "user_agent": payload.get("user_agent", base.user_agent),
-            "timeout_seconds": int(payload.get("timeout_seconds", base.timeout_seconds)),
-            "request_delay_seconds": float(payload.get("request_delay_seconds", base.request_delay_seconds)),
+            "timeout_seconds": int(
+                payload.get("timeout_seconds", base.timeout_seconds)
+            ),
+            "request_delay_seconds": float(
+                payload.get("request_delay_seconds", base.request_delay_seconds)
+            ),
             "max_pages": int(payload.get("max_pages", base.max_pages)),
             "max_posts": int(payload.get("max_posts", base.max_posts)),
             "s01_refetch_existing_on_full": _as_bool(
-                payload.get("s01_refetch_existing_on_full", base.s01_refetch_existing_on_full),
+                payload.get(
+                    "s01_refetch_existing_on_full", base.s01_refetch_existing_on_full
+                ),
                 base.s01_refetch_existing_on_full,
             ),
-            "s02_max_workers": int(payload.get("s02_max_workers", base.s02_max_workers)),
+            "s02_max_workers": int(
+                payload.get("s02_max_workers", base.s02_max_workers)
+            ),
             "s03_legacy_downloads_dir": Path(
-                payload.get("s03_legacy_downloads_dir", str(base.s03_legacy_downloads_dir))
+                payload.get(
+                    "s03_legacy_downloads_dir", str(base.s03_legacy_downloads_dir)
+                )
             ),
             "s03_output_downloads_dir": Path(
-                payload.get("s03_output_downloads_dir", str(base.s03_output_downloads_dir))
+                payload.get(
+                    "s03_output_downloads_dir", str(base.s03_output_downloads_dir)
+                )
             ),
             "s03_require_maps_tag": _as_bool(
                 payload.get("s03_require_maps_tag", base.s03_require_maps_tag),
                 base.s03_require_maps_tag,
             ),
             "s03_max_assets": int(payload.get("s03_max_assets", base.s03_max_assets)),
-            "s03_delay_seconds": float(payload.get("s03_delay_seconds", base.s03_delay_seconds)),
-            "s03_timeout_seconds": int(payload.get("s03_timeout_seconds", base.s03_timeout_seconds)),
-            "s04_input_csv": Path(payload.get("s04_input_csv", str(base.s04_input_csv))),
-            "s04_output_csv": Path(payload.get("s04_output_csv", str(base.s04_output_csv))),
-            "s04_output_json": Path(payload.get("s04_output_json", str(base.s04_output_json))),
-            "s04_assets_dir": Path(payload.get("s04_assets_dir", str(base.s04_assets_dir))),
-            "s04_preview_dir": Path(payload.get("s04_preview_dir", str(base.s04_preview_dir))),
+            "s03_delay_seconds": float(
+                payload.get("s03_delay_seconds", base.s03_delay_seconds)
+            ),
+            "s03_timeout_seconds": int(
+                payload.get("s03_timeout_seconds", base.s03_timeout_seconds)
+            ),
+            "s04_input_csv": Path(
+                payload.get("s04_input_csv", str(base.s04_input_csv))
+            ),
+            "s04_output_csv": Path(
+                payload.get("s04_output_csv", str(base.s04_output_csv))
+            ),
+            "s04_output_json": Path(
+                payload.get("s04_output_json", str(base.s04_output_json))
+            ),
+            "s04_assets_dir": Path(
+                payload.get("s04_assets_dir", str(base.s04_assets_dir))
+            ),
+            "s04_preview_dir": Path(
+                payload.get("s04_preview_dir", str(base.s04_preview_dir))
+            ),
             "s04_preview_legacy_dir": Path(
                 payload.get("s04_preview_legacy_dir", str(base.s04_preview_legacy_dir))
             ),
-            "s04_preview_url_prefix": str(payload.get("s04_preview_url_prefix", base.s04_preview_url_prefix)),
-            "s04_assets_url_prefix": str(payload.get("s04_assets_url_prefix", base.s04_assets_url_prefix)),
-            "s04_preview_width": int(payload.get("s04_preview_width", base.s04_preview_width)),
-            "s04_preview_quality": int(payload.get("s04_preview_quality", base.s04_preview_quality)),
-            "s04_preview_format": str(payload.get("s04_preview_format", base.s04_preview_format)),
-            "s04_bw_threshold": float(payload.get("s04_bw_threshold", base.s04_bw_threshold)),
-            "s04_bw_resize_max": int(payload.get("s04_bw_resize_max", base.s04_bw_resize_max)),
-            "s04_max_workers": int(payload.get("s04_max_workers", base.s04_max_workers)),
+            "s04_preview_url_prefix": str(
+                payload.get("s04_preview_url_prefix", base.s04_preview_url_prefix)
+            ),
+            "s04_assets_url_prefix": str(
+                payload.get("s04_assets_url_prefix", base.s04_assets_url_prefix)
+            ),
+            "s04_preview_width": int(
+                payload.get("s04_preview_width", base.s04_preview_width)
+            ),
+            "s04_preview_quality": int(
+                payload.get("s04_preview_quality", base.s04_preview_quality)
+            ),
+            "s04_preview_format": str(
+                payload.get("s04_preview_format", base.s04_preview_format)
+            ),
+            "s04_bw_threshold": float(
+                payload.get("s04_bw_threshold", base.s04_bw_threshold)
+            ),
+            "s04_bw_resize_max": int(
+                payload.get("s04_bw_resize_max", base.s04_bw_resize_max)
+            ),
+            "s04_max_workers": int(
+                payload.get("s04_max_workers", base.s04_max_workers)
+            ),
             "s04_save_every": int(payload.get("s04_save_every", base.s04_save_every)),
-            "s04_progress_log_every": int(payload.get("s04_progress_log_every", base.s04_progress_log_every)),
+            "s04_progress_log_every": int(
+                payload.get("s04_progress_log_every", base.s04_progress_log_every)
+            ),
             "s04_progress_log_seconds": float(
                 payload.get("s04_progress_log_seconds", base.s04_progress_log_seconds)
             ),
-            "s04_resume": _as_bool(payload.get("s04_resume", base.s04_resume), base.s04_resume),
-            "include_tags": _as_bool(payload.get("include_tags", base.include_tags), base.include_tags),
+            "s04_resume": _as_bool(
+                payload.get("s04_resume", base.s04_resume), base.s04_resume
+            ),
+            "include_tags": _as_bool(
+                payload.get("include_tags", base.include_tags), base.include_tags
+            ),
             "carry_forward_missing": _as_bool(
                 payload.get("carry_forward_missing", base.carry_forward_missing),
                 base.carry_forward_missing,
